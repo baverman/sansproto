@@ -1,6 +1,8 @@
 # sansproto
 
-Sans-I/O helpers for byte stream protocol parsers.
+[Sans-I/O][sans-io] helpers for byte stream protocol parsers.
+
+[sans-io]: https://sans-io.readthedocs.io/
 
 ## Motivation
 
