@@ -13,7 +13,7 @@ from typing import (
 
 from .compat import ParamSpec
 
-version = '0.9'
+version = '0.10dev'
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -21,33 +21,87 @@ Data = Union[bytes, bytearray]
 Receiver = Generator[None, Data, None]
 DataCoro = Generator[None, Data, T]
 DataCall = Callable[[Data], None]
+StreamEvent = Union[T, 'StreamClosedType']
 
 __all__ = [
     'Reader',
-    'receiver',
+    'stream_receiver',
+    'event_receiver',
     'Receiver',
     'DataCall',
+    'StreamEvent',
     'Collector',
     'DataCoro',
     'IncompleteError',
+    'StreamClosed',
+    'StreamClosedType',
+    'StreamClosedException',
 ]
 
 
 class IncompleteError(Exception):
     partial: bytes
 
-    def __init__(self, partial: bytearray):
+    def __init__(self, partial: bytes):
         super().__init__('Incomplete data')
-        self.partial = bytes(partial)
+        self.partial = partial
 
 
-def receiver(fn: Callable[P, Receiver]) -> Callable[P, DataCall]:
+class StreamClosedType:
+    pass
+
+
+StreamClosed = StreamClosedType()
+
+
+class StreamClosedException(Exception):
+    pass
+
+
+def stream_receiver(fn: Callable[P, Receiver]) -> Callable[P, DataCall]:
     def proto(*args: P.args, **kwargs: P.kwargs) -> DataCall:
         g = fn(*args, **kwargs)
         next(g)
-        return g.send
+        closed = False
+
+        def send(data: Data) -> None:
+            nonlocal closed
+
+            if closed:
+                raise RuntimeError('Receiver got EOF already')
+
+            try:
+                g.send(data)
+            except StopIteration:
+                closed = True
+
+        return send
 
     return proto
+
+
+def event_receiver(
+    truncate_size: Optional[int] = None,
+) -> Callable[
+    [Callable[['Reader', Callable[[T], None]], Receiver]],
+    Callable[[Callable[[StreamEvent[T]], None]], DataCall],
+]:
+    def decorator(
+        fn: Callable[['Reader', Callable[[T], None]], Receiver],
+    ) -> Callable[[Callable[[StreamEvent[T]], None]], DataCall]:
+        @stream_receiver
+        def proto(handler: Callable[[StreamEvent[T]], None]) -> Receiver:
+            reader = Reader(truncate_size=truncate_size)
+            try:
+                while True:
+                    reader.start_event()
+                    yield from fn(reader, handler)
+            except StreamClosedException:
+                handler(StreamClosed)
+
+        return proto
+
+    return decorator
 
 
 class Reader:
@@ -56,29 +110,43 @@ class Reader:
     def __init__(self, truncate_size: Optional[int] = None):
         self.buf = bytearray()
         self.pos = 0
+        self._event_start = 0
         self.eof = False
         if truncate_size is None:
             truncate_size = self.TRUNCATE_SIZE
         self.truncate_size = truncate_size
 
-    def check_buf_is_empty(self, eof: bool = False) -> DataCoro[bytearray]:
+    def truncate(self) -> None:
+        offset = self.pos
+        self.buf = self.buf[offset:]
+        self.pos = 0
+        self._event_start -= offset
+
+    def start_event(self) -> None:
+        if self.eof:
+            raise StreamClosedException
+        self._event_start = self.pos
+
+    def check_buf_is_empty(self, eof: bool = False) -> bytearray:
         rest = self.buf[self.pos :]
+        if self.eof:
+            raise RuntimeError('Receiver got EOF already')
+
+        self.eof = True
         if rest:
-            if self.eof:
-                raise RuntimeError('Receiver got EOF already')
-            self.eof = True
             if eof:
                 return rest
-            raise IncompleteError(rest)
-        else:
-            self.eof = True
-            yield
-            raise RuntimeError('Receiver got EOF already')
+
+            raise IncompleteError(bytes(rest))
+
+        if self.pos != self._event_start:
+            raise IncompleteError(bytes(rest))
+
+        raise StreamClosedException
 
     def read(self, size: int) -> DataCoro[bytes]:
         if self.pos > self.truncate_size:
-            self.buf = self.buf[self.pos :]
-            self.pos = 0
+            self.truncate()
 
         pos = self.pos
         buf = self.buf
@@ -87,7 +155,7 @@ class Reader:
         while len(buf) < wpos:
             data = yield
             if not data:
-                yield from self.check_buf_is_empty()
+                self.check_buf_is_empty()
             buf.extend(data)
 
         rv = bytes(buf[pos:wpos])
@@ -98,8 +166,7 @@ class Reader:
         size = struct.size
 
         if self.pos > self.truncate_size:
-            self.buf = self.buf[self.pos :]
-            self.pos = 0
+            self.truncate()
 
         pos = self.pos
         buf = self.buf
@@ -108,7 +175,7 @@ class Reader:
         while len(buf) < wpos:
             data = yield
             if not data:
-                yield from self.check_buf_is_empty()
+                self.check_buf_is_empty()
             buf.extend(data)
 
         rv = struct.unpack_from(buf, pos)
@@ -119,8 +186,7 @@ class Reader:
         self, separator: bytes, include: bool = False, eof: bool = False
     ) -> DataCoro[bytes]:
         if self.pos > self.truncate_size:
-            self.buf = self.buf[self.pos :]
-            self.pos = 0
+            self.truncate()
 
         pos = self.pos
         buf = self.buf
@@ -134,11 +200,12 @@ class Reader:
             start = max(len(buf) - len(separator) + 1, 0)
             data = yield
             if not data:
-                buf = yield from self.check_buf_is_empty(eof)
+                rest = self.check_buf_is_empty(eof)
+                self.pos = len(buf)
                 if include:
-                    return bytes(buf) + separator
+                    return bytes(rest) + separator
                 else:
-                    return bytes(buf)
+                    return bytes(rest)
 
             buf.extend(data)
 
@@ -150,11 +217,11 @@ class Reader:
 
 
 class Collector(Generic[T]):
-    def __init__(self, proto: Callable[[Callable[[T], None]], DataCall]):
-        self._events: List[T] = []
+    def __init__(self, proto: Callable[[Callable[[StreamEvent[T]], None]], DataCall]):
+        self._events: List[StreamEvent[T]] = []
         self._data_call = proto(self._events.append)
 
-    def send(self, data: bytes) -> List[T]:
+    def send(self, data: bytes) -> List[StreamEvent[T]]:
         self._data_call(data)
         if self._events:
             events = self._events[:]

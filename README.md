@@ -17,13 +17,21 @@ other code that can feed it bytes.
 
 ## Core Idea
 
-Write a parser as a generator coroutine and decorate it with `receiver`. Inside the
-parser, `Reader` methods such as `read()` and `read_until()` suspend until enough bytes
-are available. When a complete message is parsed, call a handler with the event you want
-to emit.
+Write a single-event parser as a generator coroutine and decorate it with
+`event_receiver()`. Inside the parser, `Reader` methods such as `read()` and
+`read_until()` suspend until enough bytes are available. When a complete message is
+parsed, call a handler with the event you want to emit.
 
 You can call the decorated parser directly with your own handler, or use `Collector` to
 collect the events produced by each chunk.
+
+For lower-level stream parsers, use `stream_receiver` and call `reader.start_event()`
+before the code that parses one complete event. `event_receiver()` does that loop for
+you.
+
+Send an empty chunk, `b''`, to signal that the input stream is closed. If the parser is
+waiting at a message boundary, `event_receiver()` emits the `StreamClosed` event value.
+If a partial message is in progress, `Reader` raises `IncompleteError` instead.
 
 ## Performance
 
@@ -38,8 +46,8 @@ the internal buffer continues to be reused.
 
 ## Examples
 
-Use `Reader` inside a `receiver` coroutine to parse bytes as they arrive. `Collector`
-wraps the coroutine and returns any events produced by the parser after each chunk.
+Use `Reader` inside an `event_receiver()` coroutine to parse one message. `Collector`
+wraps the coroutine and returns any events produced after each chunk.
 
 ### Length-prefixed messages
 
@@ -49,16 +57,14 @@ payload bytes.
 ```python
 from typing import Callable
 
-from sansproto import Collector, Reader, Receiver, receiver
+from sansproto import Collector, Reader, Receiver, event_receiver
 
 
-@receiver
-def parser(handler: Callable[[str], None]) -> Receiver:
-    reader = Reader()
-    while True:
-        size = int((yield from reader.read_until(b':')))
-        payload = yield from reader.read(size)
-        handler(payload.decode())
+@event_receiver()
+def parser(reader: Reader, handler: Callable[[str], None]) -> Receiver:
+    size = int((yield from reader.read_until(b':')))
+    payload = yield from reader.read(size)
+    handler(payload.decode())
 
 
 messages = Collector(parser)
@@ -76,15 +82,13 @@ is not included in the returned bytes unless `include=True` is passed.
 ```python
 from typing import Callable
 
-from sansproto import Collector, Reader, Receiver, receiver
+from sansproto import Collector, Reader, Receiver, event_receiver
 
 
-@receiver
-def parser(handler: Callable[[str], None]) -> Receiver:
-    reader = Reader()
-    while True:
-        line = yield from reader.read_until(b'\n')
-        handler(line.decode())
+@event_receiver()
+def parser(reader: Reader, handler: Callable[[str], None]) -> Receiver:
+    line = yield from reader.read_until(b'\n')
+    handler(line.decode())
 
 
 lines = Collector(parser)
@@ -102,19 +106,17 @@ This parser reads a two-byte big-endian payload size followed by that many paylo
 from struct import Struct
 from typing import Callable
 
-from sansproto import Collector, Reader, Receiver, receiver
+from sansproto import Collector, Reader, Receiver, event_receiver
 
 
 header = Struct('!H')
 
 
-@receiver
-def parser(handler: Callable[[bytes], None]) -> Receiver:
-    reader = Reader()
-    while True:
-        (size,) = yield from reader.read_struct(header)
-        payload = yield from reader.read(size)
-        handler(payload)
+@event_receiver()
+def parser(reader: Reader, handler: Callable[[bytes], None]) -> Receiver:
+    (size,) = yield from reader.read_struct(header)
+    payload = yield from reader.read(size)
+    handler(payload)
 
 
 messages = Collector(parser)
@@ -131,7 +133,7 @@ protocol to a smaller parser and return the parsed value to the caller.
 ```python
 from typing import Callable
 
-from sansproto import Collector, DataCoro, Reader, Receiver, receiver
+from sansproto import Collector, DataCoro, Reader, Receiver, event_receiver
 
 
 def read_size(reader: Reader) -> DataCoro[int]:
@@ -144,13 +146,11 @@ def read_text(reader: Reader, size: int) -> DataCoro[str]:
     return payload.decode()
 
 
-@receiver
-def parser(handler: Callable[[str], None]) -> Receiver:
-    reader = Reader()
-    while True:
-        size = yield from read_size(reader)
-        text = yield from read_text(reader, size)
-        handler(text)
+@event_receiver()
+def parser(reader: Reader, handler: Callable[[str], None]) -> Receiver:
+    size = yield from read_size(reader)
+    text = yield from read_text(reader, size)
+    handler(text)
 
 
 messages = Collector(parser)
