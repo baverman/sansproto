@@ -1,0 +1,4 @@
+mypy
+ruff
+pytest<9
+coverage
