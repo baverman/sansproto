@@ -1,3 +1,4 @@
+from struct import Struct
 from typing import Callable, List, Tuple
 
 import pytest
@@ -21,6 +22,76 @@ def test_read() -> None:
     assert p.send(b'foo') == [(b'mb', b'foo')]
 
 
+def test_read_truncates_consumed_buffer() -> None:
+    @receiver
+    def proto(handler: Callable[[bytes], None]) -> Receiver:
+        reader = Reader(truncate_size=0)
+        while True:
+            handler((yield from reader.read(1)))
+
+    p = Collector(proto)
+    assert p.send(b'fo') == [b'f', b'o']
+
+
+def test_incomplete_read_size() -> None:
+    @receiver
+    def proto(handler: Callable[[bytes], None]) -> Receiver:
+        reader = Reader()
+        while True:
+            handler((yield from reader.read(3)))
+
+    p = Collector(proto)
+    assert p.send(b'fo') == []
+
+    with pytest.raises(IncompleteError) as ei:
+        p.send(b'')
+    assert ei.value.partial == b'fo'
+
+
+def test_read_struct() -> None:
+    @receiver
+    def proto(handler: Callable[[Tuple[bytes, int]], None]) -> Receiver:
+        reader = Reader()
+        while True:
+            prefix = yield from reader.read(1)
+            (value,) = yield from reader.read_struct(Struct('!H'))
+            handler((prefix, value))
+
+    p = Collector(proto)
+    assert p.send(b'a\x01') == []
+    assert p.send(b'\x02') == [(b'a', 258)]
+
+
+def test_read_struct_truncates_consumed_buffer() -> None:
+    @receiver
+    def proto(handler: Callable[[int], None]) -> Receiver:
+        reader = Reader(truncate_size=0)
+        struct = Struct('B')
+        while True:
+            (value,) = yield from reader.read_struct(struct)
+            handler(value)
+
+    p = Collector(proto)
+    assert p.send(b'\x01\x02') == [1, 2]
+
+
+def test_incomplete_read_struct() -> None:
+    @receiver
+    def proto(handler: Callable[[int], None]) -> Receiver:
+        reader = Reader()
+        struct = Struct('!H')
+        while True:
+            (value,) = yield from reader.read_struct(struct)
+            handler(value)
+
+    p = Collector(proto)
+    assert p.send(b'\x01') == []
+
+    with pytest.raises(IncompleteError) as ei:
+        p.send(b'')
+    assert ei.value.partial == b'\x01'
+
+
 def test_read_until_search_start() -> None:
     @receiver
     def proto(handler: Callable[[str], None]) -> Receiver:
@@ -36,6 +107,18 @@ def test_read_until_search_start() -> None:
 
     with pytest.raises(RuntimeError, match='EOF'):
         p.send(b'foo')
+
+
+def test_read_until_truncates_consumed_buffer() -> None:
+    @receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader(truncate_size=0)
+        while True:
+            data = yield from reader.read_until(b':')
+            handler(data.decode())
+
+    p = Collector(proto)
+    assert p.send(b'a:b:') == ['a', 'b']
 
 
 @pytest.mark.parametrize(

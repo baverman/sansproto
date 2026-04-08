@@ -111,7 +111,7 @@ class Reader:
                 yield from self.check_buf_is_empty()
             buf.extend(data)
 
-        rv = struct.unpack_from(buf)
+        rv = struct.unpack_from(buf, pos)
         self.pos = wpos
         return rv
 
