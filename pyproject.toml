@@ -1,11 +1,11 @@
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["nighio", "tests"]
+packages = ["sansproto", "tests"]
 exclude = ["bench.py"]
 
 [tool.coverage.run]
-source = ["nighio"]
+source = ["sansproto"]
 
 [tool.black]
 line-length = 100

@@ -2,7 +2,7 @@ from typing import Callable, List, Tuple
 
 import pytest
 
-from nighio import Collector, DataCoro, IncompleteError, Reader, Receiver, receiver
+from sansproto import Collector, DataCoro, IncompleteError, Reader, Receiver, receiver
 
 
 def test_read() -> None:

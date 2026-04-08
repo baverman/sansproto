@@ -1,2 +1,2 @@
-# nighio
-Library to help build sans-io style protocols.
+# sansproto
+Sans-I/O helpers for byte stream protocol parsers.
