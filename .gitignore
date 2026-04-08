@@ -2,3 +2,6 @@
 __pycache__
 bench.py
 .codex
+/build
+/dist
+/*.egg-info

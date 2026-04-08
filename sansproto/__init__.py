@@ -1,7 +1,19 @@
 from struct import Struct
-from typing import Any, Callable, Generator, Generic, List, Optional, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Generator,
+    Generic,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 from .compat import ParamSpec
+
+version = '0.9'
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -10,7 +22,15 @@ Receiver = Generator[None, Data, None]
 DataCoro = Generator[None, Data, T]
 DataCall = Callable[[Data], None]
 
-__all__ = ['Reader', 'receiver', 'Receiver', 'DataCall', 'Collector', 'DataCoro', 'IncompleteError']
+__all__ = [
+    'Reader',
+    'receiver',
+    'Receiver',
+    'DataCall',
+    'Collector',
+    'DataCoro',
+    'IncompleteError',
+]
 
 
 class IncompleteError(Exception):
