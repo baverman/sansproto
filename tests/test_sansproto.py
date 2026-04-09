@@ -19,7 +19,7 @@ def test_read() -> None:
     def proto(emit: Callable[[Tuple[bytes, bytes]], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             hdr = yield from reader.read(2)
             body = yield from reader.read(3)
             emit((hdr, body))
@@ -36,7 +36,7 @@ def test_read_truncates_consumed_buffer() -> None:
     def proto(emit: Callable[[bytes], None]) -> Parser:
         reader = Reader(truncate_size=0)
         while True:
-            reader.start_event()
+            reader.begin_event()
             emit((yield from reader.read(1)))
 
     p = Collector(proto)
@@ -48,7 +48,7 @@ def test_incomplete_read_size() -> None:
     def proto(emit: Callable[[bytes], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             emit((yield from reader.read(3)))
 
     p = Collector(proto)
@@ -64,7 +64,7 @@ def test_read_struct() -> None:
     def proto(emit: Callable[[Tuple[bytes, int]], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             prefix = yield from reader.read(1)
             (value,) = yield from reader.read_struct(Struct('!H'))
             emit((prefix, value))
@@ -80,7 +80,7 @@ def test_read_struct_truncates_consumed_buffer() -> None:
         reader = Reader(truncate_size=0)
         struct = Struct('B')
         while True:
-            reader.start_event()
+            reader.begin_event()
             (value,) = yield from reader.read_struct(struct)
             emit(value)
 
@@ -94,7 +94,7 @@ def test_incomplete_read_struct() -> None:
         reader = Reader()
         struct = Struct('!H')
         while True:
-            reader.start_event()
+            reader.begin_event()
             (value,) = yield from reader.read_struct(struct)
             emit(value)
 
@@ -111,7 +111,7 @@ def test_read_until_search_start() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             data = yield from reader.read_until(b'boo')
             emit(data.decode())
 
@@ -127,7 +127,7 @@ def test_read_until_truncates_consumed_buffer() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader(truncate_size=0)
         while True:
-            reader.start_event()
+            reader.begin_event()
             data = yield from reader.read_until(b':')
             emit(data.decode())
 
@@ -212,7 +212,7 @@ def test_read_until(
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             data = yield from reader.read_until(b':', include=include, allow_partial=allow_partial)
             emit(data.decode())
 
@@ -231,7 +231,7 @@ def test_incomplete_read() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             data = yield from reader.read_until(b':')
             emit(data.decode())
 
@@ -256,7 +256,7 @@ def test_composition() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             size = yield from parse_hdr(reader)
             data = yield from parse_body(reader, size)
             emit(data)
@@ -270,7 +270,7 @@ def test_stream_closed_with_size_header_body_message() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             size = int((yield from reader.read_until(b':')))
             body = yield from reader.read(size)
             emit(body.decode())
@@ -290,7 +290,7 @@ def test_parser_can_handle_stream_closed() -> None:
         reader = Reader()
         try:
             while True:
-                reader.start_event()
+                reader.begin_event()
                 size = int((yield from reader.read_until(b':')))
                 body = yield from reader.read(size)
                 emit(body.decode())
@@ -311,7 +311,7 @@ def test_stream_closed_inside_message_is_incomplete() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             size = int((yield from reader.read_until(b':')))
             body = yield from reader.read(size)
             emit(body.decode())
@@ -329,7 +329,7 @@ def test_read_until_eof() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             line = yield from reader.read_until(b':', allow_partial=True)
             emit(line.decode())
 
@@ -344,7 +344,7 @@ def test_receiver_open_state() -> None:
     def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
-            reader.start_event()
+            reader.begin_event()
             emit((yield from reader.read_until(b':')).decode())
 
     result: List[str] = []

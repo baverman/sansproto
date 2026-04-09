@@ -93,7 +93,7 @@ class Reader:
         self.pos = 0
         self._event_start -= offset
 
-    def start_event(self) -> None:
+    def begin_event(self) -> None:
         if self._eof:
             raise StreamClosedException
         self._event_start = self.pos

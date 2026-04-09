@@ -45,7 +45,7 @@ the internal buffer continues to be reused.
 ### 1. Start with `receiver`
 
 Use `receiver` when you want full control over the parsing loop. Create a
-`Reader`, call `reader.start_event()` before parsing one complete event, and emit parsed
+`Reader`, call `reader.begin_event()` before parsing one complete event, and emit parsed
 values through a callback.
 
 This parser reads a decimal byte length followed by `:`, then reads exactly that many
@@ -61,7 +61,7 @@ from sansproto import Parser, Reader, receiver
 def parser(emit: Callable[[str], None]) -> Parser:
     reader = Reader()
     while True:
-        reader.start_event()
+        reader.begin_event()
         size = int((yield from reader.read_until(b':')))
         payload = yield from reader.read(size)
         emit(payload.decode())
@@ -110,7 +110,7 @@ from sansproto import Collector, Parser, Reader, receiver
 def parser(emit: Callable[[str], None]) -> Parser:
     reader = Reader()
     while True:
-        reader.start_event()
+        reader.begin_event()
         size = int((yield from reader.read_until(b':')))
         payload = yield from reader.read(size)
         emit(payload.decode())
@@ -157,7 +157,7 @@ def read_text(reader: Reader, size: int) -> ReaderCoro[str]:
 def parser(emit: Callable[[str], None]) -> Parser:
     reader = Reader()
     while True:
-        reader.start_event()
+        reader.begin_event()
         size = yield from read_size(reader)
         text = yield from read_text(reader, size)
         emit(text)
