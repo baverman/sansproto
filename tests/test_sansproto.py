@@ -5,22 +5,24 @@ import pytest
 
 from sansproto import (
     Collector,
-    DataCoro,
     IncompleteError,
+    Parser,
     Reader,
-    Receiver,
+    ReaderCoro,
     StreamClosedException,
-    event_receiver,
-    stream_receiver,
+    receiver,
 )
 
 
 def test_read() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[Tuple[bytes, bytes]], None]) -> Receiver:
-        hdr = yield from reader.read(2)
-        body = yield from reader.read(3)
-        handler((hdr, body))
+    @receiver
+    def proto(emit: Callable[[Tuple[bytes, bytes]], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            hdr = yield from reader.read(2)
+            body = yield from reader.read(3)
+            emit((hdr, body))
 
     p = Collector(proto)
     assert p.send(b'f') == []
@@ -30,18 +32,24 @@ def test_read() -> None:
 
 
 def test_read_truncates_consumed_buffer() -> None:
-    @event_receiver(truncate_size=0)
-    def proto(reader: Reader, handler: Callable[[bytes], None]) -> Receiver:
-        handler((yield from reader.read(1)))
+    @receiver
+    def proto(emit: Callable[[bytes], None]) -> Parser:
+        reader = Reader(truncate_size=0)
+        while True:
+            reader.start_event()
+            emit((yield from reader.read(1)))
 
     p = Collector(proto)
     assert p.send(b'fo') == [b'f', b'o']
 
 
 def test_incomplete_read_size() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[bytes], None]) -> Receiver:
-        handler((yield from reader.read(3)))
+    @receiver
+    def proto(emit: Callable[[bytes], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            emit((yield from reader.read(3)))
 
     p = Collector(proto)
     assert p.send(b'fo') == []
@@ -52,11 +60,14 @@ def test_incomplete_read_size() -> None:
 
 
 def test_read_struct() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[Tuple[bytes, int]], None]) -> Receiver:
-        prefix = yield from reader.read(1)
-        (value,) = yield from reader.read_struct(Struct('!H'))
-        handler((prefix, value))
+    @receiver
+    def proto(emit: Callable[[Tuple[bytes, int]], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            prefix = yield from reader.read(1)
+            (value,) = yield from reader.read_struct(Struct('!H'))
+            emit((prefix, value))
 
     p = Collector(proto)
     assert p.send(b'a\x01') == []
@@ -64,22 +75,28 @@ def test_read_struct() -> None:
 
 
 def test_read_struct_truncates_consumed_buffer() -> None:
-    @event_receiver(truncate_size=0)
-    def proto(reader: Reader, handler: Callable[[int], None]) -> Receiver:
+    @receiver
+    def proto(emit: Callable[[int], None]) -> Parser:
+        reader = Reader(truncate_size=0)
         struct = Struct('B')
-        (value,) = yield from reader.read_struct(struct)
-        handler(value)
+        while True:
+            reader.start_event()
+            (value,) = yield from reader.read_struct(struct)
+            emit(value)
 
     p = Collector(proto)
     assert p.send(b'\x01\x02') == [1, 2]
 
 
 def test_incomplete_read_struct() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[int], None]) -> Receiver:
+    @receiver
+    def proto(emit: Callable[[int], None]) -> Parser:
+        reader = Reader()
         struct = Struct('!H')
-        (value,) = yield from reader.read_struct(struct)
-        handler(value)
+        while True:
+            reader.start_event()
+            (value,) = yield from reader.read_struct(struct)
+            emit(value)
 
     p = Collector(proto)
     assert p.send(b'\x01') == []
@@ -90,10 +107,13 @@ def test_incomplete_read_struct() -> None:
 
 
 def test_read_until_search_start() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        data = yield from reader.read_until(b'boo')
-        handler(data.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            data = yield from reader.read_until(b'boo')
+            emit(data.decode())
 
     p = Collector(proto)
     assert p.send(b'somebo') == []
@@ -103,17 +123,20 @@ def test_read_until_search_start() -> None:
 
 
 def test_read_until_truncates_consumed_buffer() -> None:
-    @event_receiver(truncate_size=0)
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        data = yield from reader.read_until(b':')
-        handler(data.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader(truncate_size=0)
+        while True:
+            reader.start_event()
+            data = yield from reader.read_until(b':')
+            emit(data.decode())
 
     p = Collector(proto)
     assert p.send(b'a:b:') == ['a', 'b']
 
 
 @pytest.mark.parametrize(
-    'stream,chunk_size,include,eof,expected',
+    'stream,chunk_size,include,allow_partial,expected',
     [
         ('bo:f:', 1, False, False, [[], [], ['bo'], [], ['f'], []]),
         ('bo:f:', 1, True, False, [[], [], ['bo:'], [], ['f:'], []]),
@@ -179,12 +202,19 @@ def test_read_until_truncates_consumed_buffer() -> None:
     ],
 )
 def test_read_until(
-    stream: str, chunk_size: int, include: bool, eof: bool, expected: List[List[str]]
+    stream: str,
+    chunk_size: int,
+    include: bool,
+    allow_partial: bool,
+    expected: List[List[str]],
 ) -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        data = yield from reader.read_until(b':', include=include, eof=eof)
-        handler(data.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            data = yield from reader.read_until(b':', include=include, allow_partial=allow_partial)
+            emit(data.decode())
 
     p = Collector(proto)
     data = stream.encode()
@@ -197,10 +227,13 @@ def test_read_until(
 
 
 def test_incomplete_read() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        data = yield from reader.read_until(b':')
-        handler(data.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            data = yield from reader.read_until(b':')
+            emit(data.decode())
 
     p = Collector(proto)
     assert p.send(b'foo') == []
@@ -211,30 +244,36 @@ def test_incomplete_read() -> None:
 
 
 def test_composition() -> None:
-    def parse_hdr(reader: Reader) -> DataCoro[int]:
+    def parse_hdr(reader: Reader) -> ReaderCoro[int]:
         hdr = yield from reader.read_until(b':')
         return int(hdr)
 
-    def parse_body(reader: Reader, size: int) -> DataCoro[str]:
+    def parse_body(reader: Reader, size: int) -> ReaderCoro[str]:
         body = yield from reader.read(size)
         return body.decode()
 
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        size = yield from parse_hdr(reader)
-        data = yield from parse_body(reader, size)
-        handler(data)
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            size = yield from parse_hdr(reader)
+            data = yield from parse_body(reader, size)
+            emit(data)
 
     p = Collector(proto)
     assert p.send(b'1:b2:fo') == ['b', 'fo']
 
 
 def test_stream_closed_with_size_header_body_message() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        size = int((yield from reader.read_until(b':')))
-        body = yield from reader.read(size)
-        handler(body.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            size = int((yield from reader.read_until(b':')))
+            body = yield from reader.read(size)
+            emit(body.decode())
 
     p = Collector(proto)
     assert p.send(b'3:one') == ['one']
@@ -246,33 +285,36 @@ def test_stream_closed_with_size_header_body_message() -> None:
 
 
 def test_parser_can_handle_stream_closed() -> None:
-    @stream_receiver
-    def proto(handler: Callable[[str], None]) -> Receiver:
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         try:
             while True:
                 reader.start_event()
                 size = int((yield from reader.read_until(b':')))
                 body = yield from reader.read(size)
-                handler(body.decode())
+                emit(body.decode())
         except StreamClosedException:
-            handler('closed')
+            emit('closed')
 
     p = Collector(proto)
     assert p.send(b'3:one') == ['one']
     assert p.send(b'') == ['closed']
     assert not p.open
 
-    with pytest.raises(RuntimeError, match='EOF'):
+    with pytest.raises(RuntimeError, match='closed receiver'):
         p.send(b'')
 
 
 def test_stream_closed_inside_message_is_incomplete() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        size = int((yield from reader.read_until(b':')))
-        body = yield from reader.read(size)
-        handler(body.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            size = int((yield from reader.read_until(b':')))
+            body = yield from reader.read(size)
+            emit(body.decode())
 
     p = Collector(proto)
     assert p.send(b'3:') == []
@@ -283,10 +325,13 @@ def test_stream_closed_inside_message_is_incomplete() -> None:
 
 
 def test_read_until_eof() -> None:
-    @event_receiver()
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-        line = yield from reader.read_until(b':', eof=True)
-        handler(line.decode())
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            line = yield from reader.read_until(b':', allow_partial=True)
+            emit(line.decode())
 
     p = Collector(proto)
     assert p.send(b'boo:foo') == ['boo']
@@ -294,27 +339,27 @@ def test_read_until_eof() -> None:
     assert not p.open
 
 
-def test_stream_receiver_open_state() -> None:
-    @stream_receiver
-    def proto(handler: Callable[[str], None]) -> Receiver:
+def test_receiver_open_state() -> None:
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
         reader = Reader()
         while True:
             reader.start_event()
-            handler((yield from reader.read_until(b':')).decode())
+            emit((yield from reader.read_until(b':')).decode())
 
     result: List[str] = []
-    receiver = proto(result.append)
-    assert receiver.open
-    receiver.send(b'one:')
+    data_receiver = proto(result.append)
+    assert data_receiver.open
+    data_receiver.send(b'one:')
     assert result == ['one']
-    assert receiver.open
-    receiver.send(b'')
-    assert not receiver.open
+    assert data_receiver.open
+    data_receiver.send(b'')
+    assert not data_receiver.open
 
 
 def test_handle_eof_after_eof_raises_runtime_error() -> None:
     reader = Reader()
-    reader.eof = True
+    reader._eof = True
 
-    with pytest.raises(RuntimeError, match='EOF'):
+    with pytest.raises(RuntimeError, match='closed receiver'):
         reader.handle_eof()

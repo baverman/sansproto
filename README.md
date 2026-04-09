@@ -17,17 +17,12 @@ other code that can feed it bytes.
 
 ## Core Idea
 
-Write a single-event parser as a generator coroutine and decorate it with
-`event_receiver()`. Inside the parser, `Reader` methods such as `read()` and
-`read_until()` suspend until enough bytes are available. When a complete message is
-parsed, call a handler with the event you want to emit.
+Parsers in `sansproto` are generator coroutines. They receive byte chunks through
+`send()`, suspend when they need more data, and emit parsed events through a callback.
 
-You can call the decorated parser directly with your own handler, or use `Collector` to
-collect the events produced by each chunk.
-
-For lower-level stream parsers, use `stream_receiver` and call `reader.start_event()`
-before the code that parses one complete event. `event_receiver()` does that loop for
-you.
+`Reader` holds the buffered bytes and exposes helpers such as `read()`,
+`read_struct()`, and `read_until()`. Your parser code describes protocol structure, and
+`sansproto` handles split chunks, short reads, and EOF.
 
 Send an empty chunk, `b''`, to signal that the input stream is closed. Receivers and
 collectors expose an `.open` flag, so callers can stop feeding bytes once EOF has been
@@ -45,19 +40,13 @@ threshold.
 Returned values are copied to `bytes`, which gives callers stable immutable data even as
 the internal buffer continues to be reused.
 
-## Examples
+## Tutorial
 
-Use `Reader` inside an `event_receiver()` coroutine to parse one message. `Collector`
-wraps the coroutine and returns any events produced after each chunk.
+### 1. Start with `receiver`
 
-```python
-collector = ...
-while collector.open:
-    for event in collector.send(sock.recv(65536)):
-        handle(event)
-```
-
-### Length-prefixed messages
+Use `receiver` when you want full control over the parsing loop. Create a
+`Reader`, call `reader.start_event()` before parsing one complete event, and emit parsed
+values through a callback.
 
 This parser reads a decimal byte length followed by `:`, then reads exactly that many
 payload bytes.
@@ -65,14 +54,66 @@ payload bytes.
 ```python
 from typing import Callable
 
-from sansproto import Collector, Reader, Receiver, event_receiver
+from sansproto import Parser, Reader, receiver
 
 
-@event_receiver()
-def parser(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-    size = int((yield from reader.read_until(b':')))
-    payload = yield from reader.read(size)
-    handler(payload.decode())
+@receiver
+def parser(emit: Callable[[str], None]) -> Parser:
+    reader = Reader()
+    while True:
+        reader.start_event()
+        size = int((yield from reader.read_until(b':')))
+        payload = yield from reader.read(size)
+        emit(payload.decode())
+```
+
+The decorated parser is a stateful receiver object. Feed byte chunks into it until EOF
+closes it.
+
+```python
+receiver = parser(print)
+while receiver.open:
+    receiver.send(sock.recv(65536))
+```
+
+### 2. Emit events through a callback
+
+`sansproto` parsers do not return parsed values directly from `send()`. A chunk may
+contain half an event, one event, or several events, so parsed values are pushed to a
+callback instead.
+
+You can provide any callback you want:
+
+```python
+messages = []
+receiver = parser(messages.append)
+
+assert receiver.open
+receiver.send(b'5:he')
+receiver.send(b'llo3:bye')
+receiver.send(b'')
+assert messages == ['hello', 'bye']
+```
+
+### 3. Use `Collector` when a list is enough
+
+If you just want the events produced by each chunk, `Collector` provides the callback
+for you and collects emitted values into a list.
+
+```python
+from typing import Callable
+
+from sansproto import Collector, Parser, Reader, receiver
+
+
+@receiver
+def parser(emit: Callable[[str], None]) -> Parser:
+    reader = Reader()
+    while True:
+        reader.start_event()
+        size = int((yield from reader.read_until(b':')))
+        payload = yield from reader.read(size)
+        emit(payload.decode())
 
 
 messages = Collector(parser)
@@ -80,60 +121,18 @@ messages = Collector(parser)
 assert messages.send(b'5:he') == []
 assert messages.send(b'llo3:') == ['hello']
 assert messages.send(b'bye') == ['bye']
+assert messages.send(b'') == []
+assert not messages.open
 ```
 
-### Delimited messages
-
-`read_until` can also parse line-oriented protocols. The separator is consumed, but it
-is not included in the returned bytes unless `include=True` is passed.
+If your receiver factory takes additional arguments after the emit, pass them to
+`Collector` too.
 
 ```python
-from typing import Callable
-
-from sansproto import Collector, Reader, Receiver, event_receiver
-
-
-@event_receiver()
-def parser(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-    line = yield from reader.read_until(b'\n')
-    handler(line.decode())
-
-
-lines = Collector(parser)
-
-assert lines.send(b'hello\nwor') == ['hello']
-assert lines.send(b'ld\n') == ['world']
+messages = Collector(parser_factory, arg1, arg2, option=True)
 ```
 
-### Binary headers
-
-Use `read_struct` with `struct.Struct` when a protocol has fixed-size binary fields.
-This parser reads a two-byte big-endian payload size followed by that many payload bytes.
-
-```python
-from struct import Struct
-from typing import Callable
-
-from sansproto import Collector, Reader, Receiver, event_receiver
-
-
-header = Struct('!H')
-
-
-@event_receiver()
-def parser(reader: Reader, handler: Callable[[bytes], None]) -> Receiver:
-    (size,) = yield from reader.read_struct(header)
-    payload = yield from reader.read(size)
-    handler(payload)
-
-
-messages = Collector(parser)
-
-assert messages.send(b'\x00\x05he') == []
-assert messages.send(b'llo') == [b'hello']
-```
-
-### Composing parsers
+### 4. Compose parser helpers
 
 Parser helpers can be generator functions too. Use `yield from` to delegate part of the
 protocol to a smaller parser and return the parsed value to the caller.
@@ -141,24 +140,27 @@ protocol to a smaller parser and return the parsed value to the caller.
 ```python
 from typing import Callable
 
-from sansproto import Collector, DataCoro, Reader, Receiver, event_receiver
+from sansproto import Collector, ReaderCoro, Parser, Reader, receiver
 
 
-def read_size(reader: Reader) -> DataCoro[int]:
+def read_size(reader: Reader) -> ReaderCoro[int]:
     raw_size = yield from reader.read_until(b':')
     return int(raw_size)
 
 
-def read_text(reader: Reader, size: int) -> DataCoro[str]:
+def read_text(reader: Reader, size: int) -> ReaderCoro[str]:
     payload = yield from reader.read(size)
     return payload.decode()
 
 
-@event_receiver()
-def parser(reader: Reader, handler: Callable[[str], None]) -> Receiver:
-    size = yield from read_size(reader)
-    text = yield from read_text(reader, size)
-    handler(text)
+@receiver
+def parser(emit: Callable[[str], None]) -> Parser:
+    reader = Reader()
+    while True:
+        reader.start_event()
+        size = yield from read_size(reader)
+        text = yield from read_text(reader, size)
+        emit(text)
 
 
 messages = Collector(parser)

@@ -5,7 +5,7 @@
 - Explicit control over stream end condition. Receivers could handle
   `StreamClosedException` and decide that to do.
 - Receivers and collectors now expose `.open`.
-- `event_receiver` decorator to aid simple parser implementations.
+- `stream_receiver` was renamed to `receiver`.
 
 ## 0.9
 

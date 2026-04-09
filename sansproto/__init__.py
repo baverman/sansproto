@@ -17,18 +17,20 @@ version = '0.10dev'
 
 P = ParamSpec('P')
 T = TypeVar('T')
-Data = Union[bytes, bytearray]
-Receiver = Generator[None, Data, None]
-DataCoro = Generator[None, Data, T]
+Chunk = Union[bytes, bytearray, memoryview]
+Parser = Generator[None, Chunk, None]
+ReaderCoro = Generator[None, Chunk, T]
+Emitter = Callable[[T], None]
 
 __all__ = [
     'Reader',
-    'stream_receiver',
-    'event_receiver',
+    'receiver',
+    'Chunk',
+    'Parser',
     'Receiver',
-    'DataReceiver',
+    'Emitter',
     'Collector',
-    'DataCoro',
+    'ReaderCoro',
     'IncompleteError',
     'StreamClosedException',
 ]
@@ -46,15 +48,15 @@ class StreamClosedException(Exception):
     pass
 
 
-class DataReceiver:
-    def __init__(self, g: Receiver):
+class Receiver:
+    def __init__(self, g: Parser):
         self._generator = g
         self.open = True
         next(g)
 
-    def send(self, data: Data) -> None:
+    def send(self, data: Chunk) -> None:
         if not self.open:
-            raise RuntimeError('Receiver got EOF already')
+            raise RuntimeError('Cannot send to a closed receiver')
 
         try:
             self._generator.send(data)
@@ -64,32 +66,13 @@ class DataReceiver:
             self.open = False
 
 
-def stream_receiver(fn: Callable[P, Receiver]) -> Callable[P, DataReceiver]:
-    def proto(*args: P.args, **kwargs: P.kwargs) -> DataReceiver:
-        return DataReceiver(fn(*args, **kwargs))
+def receiver(
+    parser: Callable[Concatenate[Emitter[T], P], Parser],
+) -> Callable[Concatenate[Emitter[T], P], Receiver]:
+    def receiver_factory(emit: Emitter[T], *args: P.args, **kwargs: P.kwargs) -> Receiver:
+        return Receiver(parser(emit, *args, **kwargs))
 
-    return proto
-
-
-def event_receiver(
-    truncate_size: Optional[int] = None,
-) -> Callable[
-    [Callable[Concatenate['Reader', P], Receiver]],
-    Callable[P, DataReceiver],
-]:
-    def decorator(
-        fn: Callable[Concatenate['Reader', P], Receiver],
-    ) -> Callable[P, DataReceiver]:
-        @stream_receiver
-        def proto(*args: P.args, **kwargs: P.kwargs) -> Receiver:
-            reader = Reader(truncate_size=truncate_size)
-            while True:
-                reader.start_event()
-                yield from fn(reader, *args, **kwargs)
-
-        return proto
-
-    return decorator
+    return receiver_factory  # type: ignore[return-value]
 
 
 class Reader:
@@ -99,10 +82,10 @@ class Reader:
         self.buf = bytearray()
         self.pos = 0
         self._event_start = 0
-        self.eof = False
+        self._eof = False
         if truncate_size is None:
             truncate_size = self.TRUNCATE_SIZE
-        self.truncate_size = truncate_size
+        self._truncate_size = truncate_size
 
     def truncate(self) -> None:
         offset = self.pos
@@ -111,18 +94,18 @@ class Reader:
         self._event_start -= offset
 
     def start_event(self) -> None:
-        if self.eof:
+        if self._eof:
             raise StreamClosedException
         self._event_start = self.pos
 
-    def handle_eof(self, eof: bool = False) -> bytearray:
+    def handle_eof(self, allow_partial: bool = False) -> bytearray:
         rest = self.buf[self.pos :]
-        if self.eof:
-            raise RuntimeError('Receiver got EOF already')
+        if self._eof:
+            raise RuntimeError('Cannot send to a closed receiver')
 
-        self.eof = True
+        self._eof = True
         if rest:
-            if eof:
+            if allow_partial:
                 return rest
 
             raise IncompleteError(bytes(rest))
@@ -132,8 +115,8 @@ class Reader:
 
         raise StreamClosedException
 
-    def read(self, size: int) -> DataCoro[bytes]:
-        if self.pos > self.truncate_size:
+    def read(self, size: int) -> ReaderCoro[bytes]:
+        if self.pos > self._truncate_size:
             self.truncate()
 
         pos = self.pos
@@ -150,10 +133,10 @@ class Reader:
         self.pos = wpos
         return rv
 
-    def read_struct(self, struct: Struct) -> DataCoro[Tuple[Any, ...]]:
+    def read_struct(self, struct: Struct) -> ReaderCoro[Tuple[Any, ...]]:
         size = struct.size
 
-        if self.pos > self.truncate_size:
+        if self.pos > self._truncate_size:
             self.truncate()
 
         pos = self.pos
@@ -171,9 +154,9 @@ class Reader:
         return rv
 
     def read_until(
-        self, separator: bytes, include: bool = False, eof: bool = False
-    ) -> DataCoro[bytes]:
-        if self.pos > self.truncate_size:
+        self, separator: bytes, include: bool = False, allow_partial: bool = False
+    ) -> ReaderCoro[bytes]:
+        if self.pos > self._truncate_size:
             self.truncate()
 
         pos = self.pos
@@ -188,7 +171,7 @@ class Reader:
             start = max(len(buf) - len(separator) + 1, 0)
             data = yield
             if not data:
-                rest = self.handle_eof(eof)
+                rest = self.handle_eof(allow_partial)
                 self.pos = len(buf)
                 if include:
                     return bytes(rest) + separator
@@ -207,17 +190,19 @@ class Reader:
 class Collector(Generic[T]):
     def __init__(
         self,
-        proto: Callable[Concatenate[Callable[[T], None], P], DataReceiver],
+        receiver_factory: Callable[Concatenate[Emitter[T], P], Receiver],
         *args: P.args,
         **kwargs: P.kwargs,
     ):
         self._events: List[T] = []
-        self._receiver = proto(self._events.append, *args, **kwargs)
-        self.open = True
+        self._receiver = receiver_factory(self._events.append, *args, **kwargs)
 
-    def send(self, data: bytes) -> List[T]:
+    @property
+    def open(self) -> bool:
+        return self._receiver.open
+
+    def send(self, data: Chunk) -> List[T]:
         self._receiver.send(data)
-        self.open = self._receiver.open
         if self._events:
             events = self._events[:]
             self._events.clear()
