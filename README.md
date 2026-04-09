@@ -29,9 +29,10 @@ For lower-level stream parsers, use `stream_receiver` and call `reader.start_eve
 before the code that parses one complete event. `event_receiver()` does that loop for
 you.
 
-Send an empty chunk, `b''`, to signal that the input stream is closed. If the parser is
-waiting at a message boundary, `event_receiver()` emits the `StreamClosed` event value.
-If a partial message is in progress, `Reader` raises `IncompleteError` instead.
+Send an empty chunk, `b''`, to signal that the input stream is closed. Receivers and
+collectors expose an `.open` flag, so callers can stop feeding bytes once EOF has been
+accepted. If a partial message is in progress, `Reader` raises `IncompleteError`
+instead.
 
 ## Performance
 
@@ -48,6 +49,13 @@ the internal buffer continues to be reused.
 
 Use `Reader` inside an `event_receiver()` coroutine to parse one message. `Collector`
 wraps the coroutine and returns any events produced after each chunk.
+
+```python
+collector = ...
+while collector.open:
+    for event in collector.send(sock.recv(65536)):
+        handle(event)
+```
 
 ### Length-prefixed messages
 

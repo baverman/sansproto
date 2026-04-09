@@ -20,21 +20,16 @@ T = TypeVar('T')
 Data = Union[bytes, bytearray]
 Receiver = Generator[None, Data, None]
 DataCoro = Generator[None, Data, T]
-DataCall = Callable[[Data], None]
-StreamEvent = Union[T, 'StreamClosedType']
 
 __all__ = [
     'Reader',
     'stream_receiver',
     'event_receiver',
     'Receiver',
-    'DataCall',
-    'StreamEvent',
+    'DataReceiver',
     'Collector',
     'DataCoro',
     'IncompleteError',
-    'StreamClosed',
-    'StreamClosedType',
     'StreamClosedException',
 ]
 
@@ -47,35 +42,31 @@ class IncompleteError(Exception):
         self.partial = partial
 
 
-class StreamClosedType:
-    pass
-
-
-StreamClosed = StreamClosedType()
-
-
 class StreamClosedException(Exception):
     pass
 
 
-def stream_receiver(fn: Callable[P, Receiver]) -> Callable[P, DataCall]:
-    def proto(*args: P.args, **kwargs: P.kwargs) -> DataCall:
-        g = fn(*args, **kwargs)
+class DataReceiver:
+    def __init__(self, g: Receiver):
+        self._generator = g
+        self.open = True
         next(g)
-        closed = False
 
-        def send(data: Data) -> None:
-            nonlocal closed
+    def send(self, data: Data) -> None:
+        if not self.open:
+            raise RuntimeError('Receiver got EOF already')
 
-            if closed:
-                raise RuntimeError('Receiver got EOF already')
+        try:
+            self._generator.send(data)
+        except StreamClosedException:
+            self.open = False
+        except StopIteration:
+            self.open = False
 
-            try:
-                g.send(data)
-            except StopIteration:
-                closed = True
 
-        return send
+def stream_receiver(fn: Callable[P, Receiver]) -> Callable[P, DataReceiver]:
+    def proto(*args: P.args, **kwargs: P.kwargs) -> DataReceiver:
+        return DataReceiver(fn(*args, **kwargs))
 
     return proto
 
@@ -84,20 +75,17 @@ def event_receiver(
     truncate_size: Optional[int] = None,
 ) -> Callable[
     [Callable[['Reader', Callable[[T], None]], Receiver]],
-    Callable[[Callable[[StreamEvent[T]], None]], DataCall],
+    Callable[[Callable[[T], None]], DataReceiver],
 ]:
     def decorator(
         fn: Callable[['Reader', Callable[[T], None]], Receiver],
-    ) -> Callable[[Callable[[StreamEvent[T]], None]], DataCall]:
+    ) -> Callable[[Callable[[T], None]], DataReceiver]:
         @stream_receiver
-        def proto(handler: Callable[[StreamEvent[T]], None]) -> Receiver:
+        def proto(handler: Callable[[T], None]) -> Receiver:
             reader = Reader(truncate_size=truncate_size)
-            try:
-                while True:
-                    reader.start_event()
-                    yield from fn(reader, handler)
-            except StreamClosedException:
-                handler(StreamClosed)
+            while True:
+                reader.start_event()
+                yield from fn(reader, handler)
 
         return proto
 
@@ -217,12 +205,14 @@ class Reader:
 
 
 class Collector(Generic[T]):
-    def __init__(self, proto: Callable[[Callable[[StreamEvent[T]], None]], DataCall]):
-        self._events: List[StreamEvent[T]] = []
-        self._data_call = proto(self._events.append)
+    def __init__(self, proto: Callable[[Callable[[T], None]], DataReceiver]):
+        self._events: List[T] = []
+        self._receiver = proto(self._events.append)
+        self.open = True
 
-    def send(self, data: bytes) -> List[StreamEvent[T]]:
-        self._data_call(data)
+    def send(self, data: bytes) -> List[T]:
+        self._receiver.send(data)
+        self.open = self._receiver.open
         if self._events:
             events = self._events[:]
             self._events.clear()

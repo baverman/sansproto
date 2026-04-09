@@ -9,7 +9,6 @@ from sansproto import (
     IncompleteError,
     Reader,
     Receiver,
-    StreamClosed,
     StreamClosedException,
     event_receiver,
     stream_receiver,
@@ -99,7 +98,8 @@ def test_read_until_search_start() -> None:
     p = Collector(proto)
     assert p.send(b'somebo') == []
     assert p.send(b'omooboo') == ['some', 'moo']
-    assert p.send(b'') == [StreamClosed]
+    assert p.send(b'') == []
+    assert not p.open
 
 
 def test_read_until_truncates_consumed_buffer() -> None:
@@ -115,11 +115,11 @@ def test_read_until_truncates_consumed_buffer() -> None:
 @pytest.mark.parametrize(
     'stream,chunk_size,include,eof,expected',
     [
-        ('bo:f:', 1, False, False, [[], [], ['bo'], [], ['f'], [StreamClosed]]),
-        ('bo:f:', 1, True, False, [[], [], ['bo:'], [], ['f:'], [StreamClosed]]),
-        ('boo:f:', 3, False, False, [[], ['boo', 'f'], [StreamClosed]]),
-        ('boo', 3, False, True, [[], ['boo', StreamClosed]]),
-        ('boo', 3, True, True, [[], ['boo:', StreamClosed]]),
+        ('bo:f:', 1, False, False, [[], [], ['bo'], [], ['f'], []]),
+        ('bo:f:', 1, True, False, [[], [], ['bo:'], [], ['f:'], []]),
+        ('boo:f:', 3, False, False, [[], ['boo', 'f'], []]),
+        ('boo', 3, False, True, [[], ['boo']]),
+        ('boo', 3, True, True, [[], ['boo:']]),
         (
             '1:2:3:4:5:6:',
             1,
@@ -138,7 +138,7 @@ def test_read_until_truncates_consumed_buffer() -> None:
                 ['5'],
                 [],
                 ['6'],
-                [StreamClosed],
+                [],
             ],
         ),
         (
@@ -146,35 +146,35 @@ def test_read_until_truncates_consumed_buffer() -> None:
             2,
             False,
             False,
-            [['1'], ['2'], ['3'], ['4'], ['5'], ['6'], [StreamClosed]],
+            [['1'], ['2'], ['3'], ['4'], ['5'], ['6'], []],
         ),
         (
             '1:2:3:4:5:6:',
             3,
             False,
             False,
-            [['1'], ['2', '3'], ['4'], ['5', '6'], [StreamClosed]],
+            [['1'], ['2', '3'], ['4'], ['5', '6'], []],
         ),
         (
             '1:2:3:4:5:6:',
             4,
             False,
             False,
-            [['1', '2'], ['3', '4'], ['5', '6'], [StreamClosed]],
+            [['1', '2'], ['3', '4'], ['5', '6'], []],
         ),
         (
             '1:2:3:4:5:6:',
             5,
             False,
             False,
-            [['1', '2'], ['3', '4', '5'], ['6'], [StreamClosed]],
+            [['1', '2'], ['3', '4', '5'], ['6'], []],
         ),
         (
             '1:2:3:4:5:6:',
             6,
             False,
             False,
-            [['1', '2', '3'], ['4', '5', '6'], [StreamClosed]],
+            [['1', '2', '3'], ['4', '5', '6'], []],
         ),
     ],
 )
@@ -188,11 +188,12 @@ def test_read_until(
 
     p = Collector(proto)
     data = stream.encode()
-    result = []
+    result: List[List[str]] = []
     for start in range(0, len(data), chunk_size):
         result.append(p.send(data[start : start + chunk_size]))
     result.append(p.send(b''))
     assert result == expected
+    assert not p.open
 
 
 def test_incomplete_read() -> None:
@@ -240,7 +241,8 @@ def test_stream_closed_with_size_header_body_message() -> None:
     assert p.send(b'3:t') == []
     assert p.send(b'wo') == ['two']
 
-    assert p.send(b'') == [StreamClosed]
+    assert p.send(b'') == []
+    assert not p.open
 
 
 def test_parser_can_handle_stream_closed() -> None:
@@ -259,6 +261,7 @@ def test_parser_can_handle_stream_closed() -> None:
     p = Collector(proto)
     assert p.send(b'3:one') == ['one']
     assert p.send(b'') == ['closed']
+    assert not p.open
 
     with pytest.raises(RuntimeError, match='EOF'):
         p.send(b'')
@@ -287,7 +290,26 @@ def test_read_until_eof() -> None:
 
     p = Collector(proto)
     assert p.send(b'boo:foo') == ['boo']
-    assert p.send(b'') == ['foo', StreamClosed]
+    assert p.send(b'') == ['foo']
+    assert not p.open
+
+
+def test_stream_receiver_open_state() -> None:
+    @stream_receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader()
+        while True:
+            reader.start_event()
+            handler((yield from reader.read_until(b':')).decode())
+
+    result: List[str] = []
+    receiver = proto(result.append)
+    assert receiver.open
+    receiver.send(b'one:')
+    assert result == ['one']
+    assert receiver.open
+    receiver.send(b'')
+    assert not receiver.open
 
 
 def test_check_buf_is_empty_after_eof_raises_runtime_error() -> None:
