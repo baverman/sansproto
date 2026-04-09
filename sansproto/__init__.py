@@ -11,7 +11,7 @@ from typing import (
     Union,
 )
 
-from .compat import ParamSpec
+from .compat import Concatenate, ParamSpec
 
 version = '0.10dev'
 
@@ -74,18 +74,18 @@ def stream_receiver(fn: Callable[P, Receiver]) -> Callable[P, DataReceiver]:
 def event_receiver(
     truncate_size: Optional[int] = None,
 ) -> Callable[
-    [Callable[['Reader', Callable[[T], None]], Receiver]],
-    Callable[[Callable[[T], None]], DataReceiver],
+    [Callable[Concatenate['Reader', P], Receiver]],
+    Callable[P, DataReceiver],
 ]:
     def decorator(
-        fn: Callable[['Reader', Callable[[T], None]], Receiver],
-    ) -> Callable[[Callable[[T], None]], DataReceiver]:
+        fn: Callable[Concatenate['Reader', P], Receiver],
+    ) -> Callable[P, DataReceiver]:
         @stream_receiver
-        def proto(handler: Callable[[T], None]) -> Receiver:
+        def proto(*args: P.args, **kwargs: P.kwargs) -> Receiver:
             reader = Reader(truncate_size=truncate_size)
             while True:
                 reader.start_event()
-                yield from fn(reader, handler)
+                yield from fn(reader, *args, **kwargs)
 
         return proto
 
@@ -205,9 +205,14 @@ class Reader:
 
 
 class Collector(Generic[T]):
-    def __init__(self, proto: Callable[[Callable[[T], None]], DataReceiver]):
+    def __init__(
+        self,
+        proto: Callable[Concatenate[Callable[[T], None], P], DataReceiver],
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ):
         self._events: List[T] = []
-        self._receiver = proto(self._events.append)
+        self._receiver = proto(self._events.append, *args, **kwargs)
         self.open = True
 
     def send(self, data: bytes) -> List[T]:

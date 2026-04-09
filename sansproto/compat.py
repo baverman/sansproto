@@ -3,18 +3,18 @@ from typing import TYPE_CHECKING
 
 ver = sys.version_info[:2]
 
-__all__ = ['ParamSpec', 'Self']
+__all__ = ['Concatenate', 'ParamSpec', 'Self']
 
 if TYPE_CHECKING:  # pragma: no cover
-    from typing import ParamSpec, Self
+    from typing import Concatenate, ParamSpec, Self
 else:
     Self = None
 
-    # class _Concatenate:
-    #     def __getitem__(self, *args):
-    #         return []
+    class _Concatenate:
+        def __getitem__(self, *args):  # pragma: no cover
+            return []
 
-    # Concatenate = _Concatenate()
+    Concatenate = _Concatenate()
 
     class ParamSpec(list):
         args = None
