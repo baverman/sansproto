@@ -312,9 +312,9 @@ def test_stream_receiver_open_state() -> None:
     assert not receiver.open
 
 
-def test_check_buf_is_empty_after_eof_raises_runtime_error() -> None:
+def test_handle_eof_after_eof_raises_runtime_error() -> None:
     reader = Reader()
     reader.eof = True
 
     with pytest.raises(RuntimeError, match='EOF'):
-        reader.check_buf_is_empty()
+        reader.handle_eof()

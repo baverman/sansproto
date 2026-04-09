@@ -115,7 +115,7 @@ class Reader:
             raise StreamClosedException
         self._event_start = self.pos
 
-    def check_buf_is_empty(self, eof: bool = False) -> bytearray:
+    def handle_eof(self, eof: bool = False) -> bytearray:
         rest = self.buf[self.pos :]
         if self.eof:
             raise RuntimeError('Receiver got EOF already')
@@ -143,7 +143,7 @@ class Reader:
         while len(buf) < wpos:
             data = yield
             if not data:
-                self.check_buf_is_empty()
+                self.handle_eof()
             buf.extend(data)
 
         rv = bytes(buf[pos:wpos])
@@ -163,7 +163,7 @@ class Reader:
         while len(buf) < wpos:
             data = yield
             if not data:
-                self.check_buf_is_empty()
+                self.handle_eof()
             buf.extend(data)
 
         rv = struct.unpack_from(buf, pos)
@@ -188,7 +188,7 @@ class Reader:
             start = max(len(buf) - len(separator) + 1, 0)
             data = yield
             if not data:
-                rest = self.check_buf_is_empty(eof)
+                rest = self.handle_eof(eof)
                 self.pos = len(buf)
                 if include:
                     return bytes(rest) + separator
