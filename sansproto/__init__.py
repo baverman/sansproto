@@ -39,6 +39,7 @@ __all__ = [
     'Collector',
     'ReaderCoro',
     'IncompleteError',
+    'LimitExceededError',
     'StreamClosedException',
 ]
 
@@ -55,6 +56,16 @@ class IncompleteError(Exception):
     def __init__(self, partial: bytes):
         super().__init__('Incomplete data')
         self.partial = partial
+
+
+class LimitExceededError(Exception):
+    """Raised when a separator-delimited field grows beyond a configured limit."""
+
+    limit: int
+
+    def __init__(self, limit: int):
+        super().__init__(f'Chunk exceeds configured limit: {limit}')
+        self.limit = limit
 
 
 class StreamClosedException(Exception):
@@ -111,18 +122,33 @@ class Reader:
     `Reader` keeps unread data between `send()` calls and exposes generator-based
     methods for reading fixed-size fields, unpacking structs, and consuming data
     until a separator is found.
+
+    `Reader(*, truncate_size: Optional[int] = None, unbounded_read_limit: Optional[int] = None)`
+
+    `truncate_size` controls when consumed bytes are compacted out of the
+    internal buffer. `unbounded_read_limit` caps separator-delimited reads such
+    as `read_until()`. Passing `None` for either argument uses the default.
     """
 
     TRUNCATE_SIZE = 1 << 16
+    UNBOUNDED_READ_LIMIT = 1 << 16
 
-    def __init__(self, truncate_size: Optional[int] = None):
+    def __init__(
+        self,
+        *,
+        truncate_size: Optional[int] = None,
+        unbounded_read_limit: Optional[int] = None,
+    ):
         self.buf = bytearray()
         self.pos = 0
         self._event_start = 0
         self._eof = False
         if truncate_size is None:
             truncate_size = self.TRUNCATE_SIZE
+        if unbounded_read_limit is None:
+            unbounded_read_limit = self.UNBOUNDED_READ_LIMIT
         self._truncate_size = truncate_size
+        self._unbounded_read_limit = unbounded_read_limit
 
     def truncate(self) -> None:
         """Discard already consumed bytes and realign reader offsets."""
@@ -219,27 +245,41 @@ class Reader:
         return rv
 
     def read_until(
-        self, separator: bytes, include: bool = False, allow_partial: bool = False
+        self,
+        separator: bytes,
+        include: bool = False,
+        allow_partial: bool = False,
     ) -> ReaderCoro[bytes]:
         """Read up to the next `separator`.
 
         Use `yield from` to wait until the separator is buffered, then return the
         bytes before it or including it, depending on `include`. The read
         position always advances past the separator. If `allow_partial` is true,
-        EOF returns the unread tail when no separator is found.
+        EOF returns the unread tail when no separator is found. The amount of
+        buffered data before `separator` is limited by the reader's configured
+        unbounded read limit.
         """
+
+        if not separator:
+            raise ValueError('separator must not be empty')
 
         if self.pos > self._truncate_size:
             self.truncate()
 
         pos = self.pos
         buf = self.buf
+        max_buffered = pos + self._unbounded_read_limit + len(separator) - 1
 
         start = pos
         while True:
             idx = buf.find(separator, start)
             if idx >= 0:
+                if idx - pos > self._unbounded_read_limit:
+                    raise LimitExceededError(self._unbounded_read_limit)
                 break
+
+            if len(buf) > max_buffered:
+                raise LimitExceededError(self._unbounded_read_limit)
 
             start = max(len(buf) - len(separator) + 1, 0)
             data = yield

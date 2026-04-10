@@ -391,6 +391,11 @@ If `allow_partial=True` and EOF arrives before `separator` is found,
 `read_until()` returns the unread buffered tail instead of raising
 `IncompleteError`.
 
+`read_until()` is bounded by the reader's configured `unbounded_read_limit`,
+which defaults to `64 KiB`. It raises `LimitExceededError` when the data before
+`separator` would exceed that limit. Use a different reader-level value if your
+protocol needs a different bound for separator-delimited fields.
+
 ```python
 line = yield from reader.read_until(b'\n')
 header = yield from reader.read_until(b':', include=True)

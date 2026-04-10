@@ -1,3 +1,11 @@
+## 0.11dev
+
+### Changed
+
+- `Reader.read_until()` is now bounded by the reader's configured
+  `unbounded_read_limit`, which defaults to `64 KiB`, and raises
+  `LimitExceededError` when a separator-delimited field exceeds that limit.
+
 ## 0.10
 
 ### Changed

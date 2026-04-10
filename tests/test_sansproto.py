@@ -6,6 +6,7 @@ import pytest
 from sansproto import (
     Collector,
     IncompleteError,
+    LimitExceededError,
     Parser,
     Reader,
     ReaderCoro,
@@ -337,6 +338,61 @@ def test_read_until_eof() -> None:
     assert p.send(b'boo:foo') == ['boo']
     assert p.send(b'') == ['foo']
     assert not p.open
+
+
+def test_read_until_unbounded_read_limit_for_delimited_fields() -> None:
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader(unbounded_read_limit=3)
+        while True:
+            reader.begin_event()
+            line = yield from reader.read_until(b':')
+            emit(line.decode())
+
+    p = Collector(proto)
+    assert p.send(b'foo:') == ['foo']
+    assert p.send(b'') == []
+    assert not p.open
+
+    p = Collector(proto)
+    with pytest.raises(LimitExceededError) as ei:
+        p.send(b'four')
+    assert ei.value.limit == 3
+
+
+def test_read_until_unbounded_read_limit_allows_separator_overlap() -> None:
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader(unbounded_read_limit=3)
+        while True:
+            reader.begin_event()
+            data = yield from reader.read_until(b'END')
+            emit(data.decode())
+
+    p = Collector(proto)
+    assert p.send(b'abcEN') == []
+    assert p.send(b'D') == ['abc']
+
+
+def test_read_until_rejects_empty_separator() -> None:
+    reader = Reader()
+    g = reader.read_until(b'')
+    with pytest.raises(ValueError, match='separator must not be empty'):
+        next(g)
+
+
+def test_read_until_unbounded_read_limit_rejects_late_separator() -> None:
+    @receiver
+    def proto(emit: Callable[[str], None]) -> Parser:
+        reader = Reader(unbounded_read_limit=3)
+        while True:
+            reader.begin_event()
+            emit((yield from reader.read_until(b':')).decode())
+
+    p = Collector(proto)
+    with pytest.raises(LimitExceededError) as ei:
+        p.send(b'abcd:')
+    assert ei.value.limit == 3
 
 
 def test_receiver_open_state() -> None:
