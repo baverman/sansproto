@@ -20,7 +20,7 @@ from typing import (
 
 from .compat import Concatenate, ParamSpec
 
-version = '0.10dev'
+version = '0.10'
 
 P = ParamSpec('P')
 T = TypeVar('T')
